@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#111111">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-src https://script.google.com https://*.googleusercontent.com; img-src 'self' data:; connect-src 'self'; manifest-src 'self'">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <title>Family Hub</title>
@@ -125,9 +126,18 @@
     }, 20000);
   }
 
+  var NANIT_INTENT = 'intent://#Intent;package=com.nanit.baby;end';
+  var MAX_MESSAGE_CHARS = 3e6;
+
   window.addEventListener('message', function (e) {
     if (!APP_ORIGIN_RE.test(e.origin)) return;
     var msg = e.data || {};
+    if (typeof msg !== 'object' || (typeof msg.b64 === 'string' && msg.b64.length > MAX_MESSAGE_CHARS)) return;
+    if (msg.type === 'familyhub-open-nanit') {
+      // Only the connected app may ask; the shell opens the official Nanit app and nothing else.
+      if (appWindow && e.source === appWindow) location.href = NANIT_INTENT;
+      return;
+    }
     if (msg.type === 'familyhub-hello') {
       appWindow = e.source; appOrigin = e.origin;
       set('App connected (signed in inside the frame)', 'PASS', e.origin);
