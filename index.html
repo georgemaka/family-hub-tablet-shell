@@ -126,16 +126,18 @@
     }, 20000);
   }
 
-  var NANIT_INTENT = 'intent://#Intent;package=com.nanit.baby;end';
+  // Official apps the app may ask the shell to open (beside it). Nothing else can be launched.
+  var APPS = { nanit: 'com.nanit.baby', alexa: 'com.amazon.dee.app', ring: 'com.ringapp' };
   var MAX_MESSAGE_CHARS = 3e6;
 
   window.addEventListener('message', function (e) {
     if (!APP_ORIGIN_RE.test(e.origin)) return;
     var msg = e.data || {};
     if (typeof msg !== 'object' || (typeof msg.b64 === 'string' && msg.b64.length > MAX_MESSAGE_CHARS)) return;
-    if (msg.type === 'familyhub-open-nanit') {
-      // Only the connected app may ask; the shell opens the official Nanit app and nothing else.
-      if (appWindow && e.source === appWindow) location.href = NANIT_INTENT;
+    if (msg.type === 'familyhub-open-app' || msg.type === 'familyhub-open-nanit') {
+      var pkg = APPS[msg.type === 'familyhub-open-nanit' ? 'nanit' : msg.app];
+      // Only the connected app may ask, and only for the official apps listed above.
+      if (pkg && appWindow && e.source === appWindow) location.href = 'intent://#Intent;package=' + pkg + ';end';
       return;
     }
     if (msg.type === 'familyhub-hello') {
