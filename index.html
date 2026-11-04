@@ -4,34 +4,36 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#111111">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-src https://script.google.com https://*.googleusercontent.com; img-src 'self' data:; connect-src 'self'; manifest-src 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-src https://script.google.com https://*.googleusercontent.com; img-src 'self' data:; connect-src 'self' data: blob: https://*.picovoice.ai; manifest-src 'self'">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <title>Family Hub</title>
   <!--
-    Spike 1 — tablet shell (throwaway).
-    Apps Script pages run in a Google frame that blocks the microphone. This
-    top-level page owns the mic, embeds the Apps Script app, and hands recorded
-    audio to it with postMessage. The app forwards it to its server with the
-    user's own Google session. No secrets live here; the app URL is entered on
-    the device and kept in localStorage.
+    Tablet shell (D025, D027). Apps Script pages run in a Google frame that blocks the microphone. This
+    top-level page owns the mic and the "Hey Chat" wake word (Picovoice Porcupine, vendored, runs on the
+    device), embeds the Apps Script app, and hands recorded audio to it with postMessage. No secrets in Git:
+    the app URL, the Picovoice AccessKey and the keyword file are entered on the tablet (localStorage).
   -->
   <style>
-    html, body { margin: 0; height: 100%; background: #111; color: #eee;
-                 font: 16px/1.4 system-ui, -apple-system, sans-serif; }
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font: 16px/1.4 system-ui, -apple-system, sans-serif; }
     #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: #111; }
     #mic { position: fixed; right: 20px; bottom: 20px; width: 72px; height: 72px; border-radius: 50%;
-           border: 0; background: #2d5bd7; color: #fff; font-size: 30px; box-shadow: 0 4px 16px #0008; }
+           border: 0; background: #2d5bd7; color: #fff; font-size: 30px; box-shadow: 0 4px 16px #0008; z-index: 5; }
     #mic.recording { background: #c0392b; }
     #mic:disabled { background: #444; }
+    #wake { position: fixed; right: 104px; bottom: 36px; padding: 8px 12px; border-radius: 999px; border: 0;
+            background: #1d9e75; color: #fff; font: 13px system-ui; box-shadow: 0 2px 8px #0008; z-index: 5; }
+    #bubble { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%); max-width: 80vw; padding: 12px 16px;
+              border-radius: 14px; background: #222e; color: #fff; font-size: 17px; box-shadow: 0 4px 16px #0008; z-index: 6; }
     #diagBtn { position: fixed; left: 12px; bottom: 20px; padding: 10px 14px; border-radius: 8px; border: 0;
-               background: #333c; color: #ddd; font: inherit; }
-    #diag { position: fixed; left: 12px; right: 12px; bottom: 80px; max-height: 60vh; overflow: auto;
+               background: #333c; color: #ddd; font: inherit; z-index: 5; }
+    #diag { position: fixed; left: 12px; right: 12px; bottom: 80px; max-height: 70vh; overflow: auto; z-index: 7;
             background: #1c1c1cf2; border-radius: 10px; padding: 12px; display: none; font-size: 14px; }
     #diag.open { display: block; }
     #diag table { width: 100%; border-collapse: collapse; }
     #diag td { padding: 4px 6px; border-top: 1px solid #2a2a2a; vertical-align: top; word-break: break-word; }
     #diag td:first-child { width: 40%; color: #bbb; }
+    #diag input { font: inherit; padding: 8px; border-radius: 6px; width: 100%; box-sizing: border-box; margin-top: 4px; }
     .PASS { color: #5fd27a; font-weight: 600; } .FAIL { color: #ff6b6b; font-weight: 600; }
     .WARN { color: #ffc14d; font-weight: 600; } .INFO { color: #8fb4ff; } .PENDING { color: #999; }
     #setup { max-width: 640px; margin: 10vh auto; padding: 20px; display: none; }
@@ -50,112 +52,121 @@
   </div>
 
   <iframe id="app" title="Family Hub" hidden></iframe>
-  <button id="mic" aria-label="Record a voice note" hidden>🎤</button>
-  <button id="diagBtn" hidden>Shell checks</button>
+  <button id="mic" aria-label="Ask Family Hub" hidden>🎤</button>
+  <button id="wake" hidden>Listening for “Hey Chat” · tap to stop</button>
+  <div id="bubble" hidden></div>
+  <button id="diagBtn" hidden>Shell</button>
   <div id="diag">
+    <h3 style="margin:0 0 6px">“Hey Chat” wake word</h3>
+    <div>Picovoice AccessKey (from console.picovoice.ai; stays on this tablet)</div>
+    <input id="pvKey" type="password" autocomplete="off">
+    <div style="margin-top:8px">“Hey Chat” keyword file (.ppn for Web / WASM)</div>
+    <input id="pvFile" type="file" accept=".ppn">
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px"><input id="pvOn" type="checkbox" style="width:auto"> Listen for “Hey Chat” while Family Hub is open</label>
+    <button id="pvSave">Save wake-word settings</button>
+    <h3 style="margin:14px 0 6px">Checks</h3>
     <table id="diagTable"></table>
-    <button id="copyDiag">Copy</button>
+    <button id="copyDiag">Copy checks</button>
     <button id="resetUrl">Change app URL</button>
   </div>
 
+  <script src="vendor/web-voice-processor.min.js"></script>
+  <script src="vendor/porcupine-web.min.js"></script>
 <script>
 (function () {
   'use strict';
-  var STORE_KEY = 'familyhub_app_url';
+  var STORE_KEY = 'familyhub_app_url', PV_KEY = 'fh_pv_key', PV_PPN = 'fh_pv_ppn', PV_ON = 'fh_pv_on';
   var APP_URL_RE = /^https:\/\/script\.google\.com\/macros\/(u\/\d+\/)?s\/[A-Za-z0-9_-]+\/(exec|dev)$/;
   var APP_ORIGIN_RE = /^https:\/\/[a-z0-9-]+-script\.googleusercontent\.com$/;
-  var RECORD_MS = 4000;
+  // Official apps the app may ask the shell to open (beside it). Nothing else can be launched.
+  var APPS = { nanit: 'com.nanit.baby', alexa: 'com.amazon.dee.app', ring: 'com.ringapp' };
+  var MAX_MESSAGE_CHARS = 3e6;
 
-  var checks = {};
-  var appWindow = null, appOrigin = null;
-  var pendingAck = null;
+  var checks = {}, appWindow = null, appOrigin = null, pendingAck = null, busy = false;
+  var mode = { night: false, visitor: false, voice: true };
 
   function set(key, status, detail) {
     checks[key] = { status: status, detail: detail === undefined ? '' : String(detail) };
-    var t = document.getElementById('diagTable');
-    t.innerHTML = '';
+    var t = document.getElementById('diagTable'); t.innerHTML = '';
     Object.keys(checks).forEach(function (k) {
-      var tr = document.createElement('tr');
-      var a = document.createElement('td'); a.textContent = k;
-      var b = document.createElement('td');
-      var s = document.createElement('span'); s.className = checks[k].status; s.textContent = checks[k].status;
-      b.appendChild(s);
+      var tr = document.createElement('tr'), a = document.createElement('td'), b = document.createElement('td'), s = document.createElement('span');
+      a.textContent = k; s.className = checks[k].status; s.textContent = checks[k].status; b.appendChild(s);
       if (checks[k].detail) b.appendChild(document.createTextNode(' — ' + checks[k].detail));
       tr.appendChild(a); tr.appendChild(b); t.appendChild(tr);
     });
   }
   function errText(e) { return e && e.name ? e.name + ': ' + e.message : String(e); }
+  function bubble(text, ms) {
+    var b = document.getElementById('bubble');
+    if (!text) { b.hidden = true; return; }
+    b.textContent = text; b.hidden = false;
+    clearTimeout(bubble.t); if (ms) bubble.t = setTimeout(function () { b.hidden = true; }, ms);
+  }
+  function beep() {
+    try { var ctx = new AudioContext(), o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = 880; g.gain.value = 0.05;
+      o.connect(g); g.connect(ctx.destination); o.start(); setTimeout(function () { o.stop(); ctx.close(); }, 120); } catch (e) {}
+  }
 
   // ---------- setup ----------
   function savedUrl() {
     var fromQuery = new URLSearchParams(location.search).get('app');
-    if (fromQuery && APP_URL_RE.test(fromQuery)) {
-      localStorage.setItem(STORE_KEY, fromQuery);
-      history.replaceState(null, '', location.pathname);   // keep the URL out of history/screens
-    }
+    if (fromQuery && APP_URL_RE.test(fromQuery)) { localStorage.setItem(STORE_KEY, fromQuery); history.replaceState(null, '', location.pathname); }
     var url = localStorage.getItem(STORE_KEY);
     return url && APP_URL_RE.test(url) ? url : null;
   }
-
   function showSetup() {
     document.getElementById('setup').style.display = 'block';
     document.getElementById('saveUrl').onclick = function () {
       var v = document.getElementById('urlInput').value.trim();
-      if (!APP_URL_RE.test(v)) {
-        document.getElementById('urlError').textContent = 'That is not an Apps Script web app URL ending in /exec.';
-        return;
-      }
-      localStorage.setItem(STORE_KEY, v);
-      location.reload();
+      if (!APP_URL_RE.test(v)) { document.getElementById('urlError').textContent = 'That is not an Apps Script web app URL ending in /exec.'; return; }
+      localStorage.setItem(STORE_KEY, v); location.reload();
     };
   }
 
-  // ---------- app frame ----------
+  // ---------- app frame + messages ----------
   function openApp(url) {
     var frame = document.getElementById('app');
     frame.hidden = false;
     document.getElementById('mic').hidden = false;
     document.getElementById('diagBtn').hidden = false;
     set('Shell origin', 'INFO', location.origin);
-    set('Shell is top-level + secure', window.isSecureContext ? 'PASS' : 'FAIL', 'secure=' + window.isSecureContext);
     set('App connected (signed in inside the frame)', 'PENDING', 'waiting for the app to say hello…');
     frame.src = url;
     setTimeout(function () {
-      if (!appWindow) set('App connected (signed in inside the frame)', 'FAIL',
-        'no hello after 20 s — the frame may show a Google sign-in or "refused to connect" page (third-party cookies?)');
+      if (!appWindow) set('App connected (signed in inside the frame)', 'FAIL', 'no hello after 20 s — sign-in page or blocked third-party cookies?');
     }, 20000);
   }
-
-  // Official apps the app may ask the shell to open (beside it). Nothing else can be launched.
-  var APPS = { nanit: 'com.nanit.baby', alexa: 'com.amazon.dee.app', ring: 'com.ringapp' };
-  var MAX_MESSAGE_CHARS = 3e6;
 
   window.addEventListener('message', function (e) {
     if (!APP_ORIGIN_RE.test(e.origin)) return;
     var msg = e.data || {};
     if (typeof msg !== 'object' || (typeof msg.b64 === 'string' && msg.b64.length > MAX_MESSAGE_CHARS)) return;
-    if (msg.type === 'familyhub-open-app' || msg.type === 'familyhub-open-nanit') {
-      var pkg = APPS[msg.type === 'familyhub-open-nanit' ? 'nanit' : msg.app];
-      // Only the connected app may ask, and only for the official apps listed above.
-      if (pkg && appWindow && e.source === appWindow) location.href = 'intent://#Intent;package=' + pkg + ';end';
-      return;
-    }
     if (msg.type === 'familyhub-hello') {
       appWindow = e.source; appOrigin = e.origin;
       set('App connected (signed in inside the frame)', 'PASS', e.origin);
-      appWindow.postMessage({ type: 'familyhub-shell-hello', v: 1 }, appOrigin);
-    } else if (msg.type === 'familyhub-audio-ack' && pendingAck) {
-      pendingAck(msg);
+      appWindow.postMessage({ type: 'familyhub-shell-hello', v: 2 }, appOrigin);
+      updateWake();
+      return;
+    }
+    if (!appWindow || e.source !== appWindow) return;          // everything below: only the connected app
+    if (msg.type === 'familyhub-audio-ack' && pendingAck) pendingAck(msg);
+    else if (msg.type === 'familyhub-open-app' || msg.type === 'familyhub-open-nanit') {
+      var pkg = APPS[msg.type === 'familyhub-open-nanit' ? 'nanit' : msg.app];
+      if (pkg) location.href = 'intent://#Intent;package=' + pkg + ';end';
+    } else if (msg.type === 'familyhub-mode') {
+      mode = { night: !!msg.night, visitor: !!msg.visitor, voice: msg.voice !== false };
+      updateWake();
+    } else if (msg.type === 'familyhub-record') {
+      converse();
     }
   });
 
-  // ---------- microphone ----------
+  // ---------- recording with silence detection ----------
   function pickMime() {
     var opts = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'];
     for (var i = 0; i < opts.length; i++) if (window.MediaRecorder && MediaRecorder.isTypeSupported(opts[i])) return opts[i];
     return '';
   }
-
   function blobToBase64(blob) {
     return new Promise(function (resolve, reject) {
       var fr = new FileReader();
@@ -164,58 +175,134 @@
       fr.readAsDataURL(blob);
     });
   }
-
-  function record() {
-    var btn = document.getElementById('mic');
-    if (!appWindow) { set('Voice → app', 'FAIL', 'app not connected yet'); openDiag(); return; }
-    btn.disabled = true;
-    var stream;
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (s) {
-      stream = s;
+  /** Records until `silenceMs` of quiet after speech, or `maxMs`. Resolves {b64, mime, spoke}. */
+  function recordUtterance(maxMs, silenceMs) {
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }).then(function (stream) {
       set('Shell microphone permission', 'PASS', 'granted');
-      var mime = pickMime();
-      var rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-      var chunks = [];
+      var mime = pickMime(), rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream), chunks = [];
+      var ctx = new AudioContext(), src = ctx.createMediaStreamSource(stream), an = ctx.createAnalyser(), buf = new Float32Array(2048);
+      an.fftSize = 2048; src.connect(an);
+      var started = Date.now(), lastLoud = 0, spoke = false;
       rec.ondataavailable = function (ev) { if (ev.data && ev.data.size) chunks.push(ev.data); };
       var stopped = new Promise(function (r) { rec.onstop = r; });
-      btn.disabled = false; btn.classList.add('recording'); btn.onclick = function () { rec.stop(); };
       rec.start(250);
-      setTimeout(function () { if (rec.state !== 'inactive') rec.stop(); }, RECORD_MS);
+      document.getElementById('mic').classList.add('recording');
+      var timer = setInterval(function () {
+        an.getFloatTimeDomainData(buf);
+        var sum = 0; for (var i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        var rms = Math.sqrt(sum / buf.length), now = Date.now();
+        if (rms > 0.02) { lastLoud = now; spoke = true; }
+        var quietLong = spoke && now - lastLoud > silenceMs, tooLong = now - started > maxMs, nothing = !spoke && now - started > 5000;
+        if ((quietLong || tooLong || nothing) && rec.state !== 'inactive') rec.stop();
+      }, 100);
       return stopped.then(function () {
-        stream.getTracks().forEach(function (t) { t.stop(); });
-        btn.classList.remove('recording'); btn.onclick = record; btn.disabled = true;
+        clearInterval(timer); stream.getTracks().forEach(function (t) { t.stop(); }); ctx.close();
+        document.getElementById('mic').classList.remove('recording');
         var blob = new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' });
-        set('Shell recorded clip', blob.size > 1000 ? 'PASS' : 'FAIL', blob.size + ' bytes, ' + blob.type);
-        return blobToBase64(blob).then(function (b64) {
-          var t = performance.now();
-          return new Promise(function (resolve) {
-            var timer = setTimeout(function () { pendingAck = null; resolve({ ok: false, error: 'no reply in 20 s' }); }, 20000);
-            pendingAck = function (ack) { clearTimeout(timer); pendingAck = null; resolve(ack); };
-            appWindow.postMessage({ type: 'familyhub-audio', b64: b64, mime: blob.type }, appOrigin);
-          }).then(function (ack) {
-            set('Voice → app → server', ack.ok ? 'PASS' : 'FAIL',
-                ack.ok ? ack.bytes + ' bytes; server ' + ack.ms + ' ms; total ' + Math.round(performance.now() - t) + ' ms' : ack.error);
-          });
-        });
+        return blobToBase64(blob).then(function (b64) { return { b64: b64, mime: blob.type, spoke: spoke }; });
       });
-    }).catch(function (e) {
-      set('Shell microphone permission', 'FAIL', errText(e));
-      openDiag();
-    }).then(function () { btn.disabled = false; btn.classList.remove('recording'); btn.onclick = record; });
+    });
+  }
+  function sendToApp(type, clip) {
+    return new Promise(function (resolve) {
+      if (type !== 'familyhub-audio') { appWindow.postMessage({ type: type, b64: clip.b64, mime: clip.mime }, appOrigin); resolve(null); return; }
+      var timer = setTimeout(function () { pendingAck = null; resolve({ ok: false, error: 'No reply in 25 s' }); }, 25000);
+      pendingAck = function (ack) { clearTimeout(timer); pendingAck = null; resolve(ack); };
+      appWindow.postMessage({ type: type, b64: clip.b64, mime: clip.mime }, appOrigin);
+    });
   }
 
-  // ---------- diagnostics ----------
+  /** One conversation turn: listen, send, show the answer; after a proposal, listen once for "yes"/"no". */
+  function converse() {
+    if (busy || !appWindow) { if (!appWindow) bubble('Family Hub isn’t connected yet.', 4000); return Promise.resolve(); }
+    busy = true; document.getElementById('mic').disabled = true;
+    return stopWake().then(function () {
+      beep(); bubble('Listening…');
+      return recordUtterance(15000, 1500);
+    }).then(function (clip) {
+      if (!clip.spoke) { bubble('I didn’t hear anything.', 3000); return; }
+      bubble('Thinking…');
+      return sendToApp('familyhub-audio', clip).then(function (ack) {
+        set('Voice → app → server', ack && ack.ok ? 'PASS' : 'FAIL', ack && ack.ok ? 'ok' : (ack && ack.error) || 'no reply');
+        if (!ack || !ack.ok) { bubble((ack && ack.error) || 'Something went wrong.', 6000); return; }
+        bubble(ack.say || '', 8000);
+        if (ack.proposal) {
+          return new Promise(function (r) { setTimeout(r, 1200); }).then(function () {
+            beep(); bubble('Say “yes” or “no”…');
+            return recordUtterance(4000, 1000);
+          }).then(function (c2) { bubble('', 0); if (c2.spoke) return sendToApp('familyhub-confirm-audio', c2); });
+        }
+      });
+    }).catch(function (e) {
+      set('Shell microphone permission', 'FAIL', errText(e)); bubble('Microphone not available.', 5000);
+    }).then(function () { busy = false; document.getElementById('mic').disabled = false; updateWake(); });
+  }
+
+  // ---------- "Hey Chat" (Porcupine, on device, foreground only) ----------
+  var pv = null, wakeStarting = false;
+  function wakeAllowed() {
+    return localStorage.getItem(PV_ON) === '1' && !!localStorage.getItem(PV_KEY) && !!localStorage.getItem(PV_PPN) &&
+      !document.hidden && !mode.night && !mode.visitor && mode.voice && !!appWindow && !busy;
+  }
+  function startWake() {
+    if (pv || wakeStarting || typeof PorcupineWeb === 'undefined') return Promise.resolve();
+    wakeStarting = true;
+    return PorcupineWeb.PorcupineWorker.create(localStorage.getItem(PV_KEY),
+      [{ base64: localStorage.getItem(PV_PPN), label: 'Hey Chat', sensitivity: 0.6 }],
+      function () { converse(); }, { publicPath: 'vendor/porcupine_params.pv', forceWrite: false }
+    ).then(function (w) {
+      pv = w;
+      return WebVoiceProcessor.WebVoiceProcessor.subscribe(pv);
+    }).then(function () {
+      wakeStarting = false; document.getElementById('wake').hidden = false;
+      set('Hey Chat wake word', 'PASS', 'listening');
+    }, function (e) {
+      wakeStarting = false; pv = null; set('Hey Chat wake word', 'FAIL', errText(e));
+    });
+  }
+  function stopWake() {
+    document.getElementById('wake').hidden = true;
+    if (!pv) return Promise.resolve();
+    var w = pv; pv = null;
+    return WebVoiceProcessor.WebVoiceProcessor.unsubscribe(w).then(function () { return w.release(); }, function () {});
+  }
+  function updateWake() {
+    if (wakeAllowed()) startWake(); else if (!busy) stopWake();
+    if (!localStorage.getItem(PV_KEY) || !localStorage.getItem(PV_PPN)) set('Hey Chat wake word', 'INFO', 'set up under “Shell”; the 🎤 button works meanwhile');
+    else if (!wakeAllowed() && !pv) set('Hey Chat wake word', 'INFO', 'paused (' + [mode.night ? 'night' : '', mode.visitor ? 'visitor mode' : '',
+      !mode.voice ? 'voice off' : '', localStorage.getItem(PV_ON) !== '1' ? 'switched off' : '', document.hidden ? 'in background' : ''].filter(Boolean).join(', ') + ')');
+  }
+  document.addEventListener('visibilitychange', updateWake);
+  document.getElementById('wake').onclick = function () { localStorage.setItem(PV_ON, '0'); document.getElementById('pvOn').checked = false; updateWake(); };
+
+  // ---------- shell panel ----------
   function openDiag() { document.getElementById('diag').classList.add('open'); }
   document.getElementById('diagBtn').onclick = function () { document.getElementById('diag').classList.toggle('open'); };
+  document.getElementById('pvKey').value = localStorage.getItem(PV_KEY) || '';
+  document.getElementById('pvOn').checked = localStorage.getItem(PV_ON) === '1';
+  document.getElementById('pvSave').onclick = function () {
+    var key = document.getElementById('pvKey').value.trim(), file = document.getElementById('pvFile').files[0];
+    var done = function () {
+      localStorage.setItem(PV_ON, document.getElementById('pvOn').checked ? '1' : '0');
+      stopWake().then(updateWake);
+      document.getElementById('diag').classList.remove('open');
+    };
+    if (key) localStorage.setItem(PV_KEY, key);
+    if (file) {
+      var fr = new FileReader();
+      fr.onload = function () { localStorage.setItem(PV_PPN, String(fr.result).split(',')[1] || ''); done(); };
+      fr.readAsDataURL(file);
+    } else done();
+  };
   document.getElementById('copyDiag').onclick = function () {
-    var report = { spike: 1, takenAt: new Date().toISOString(), userAgent: navigator.userAgent, checks: checks };
-    navigator.clipboard.writeText(JSON.stringify(report, null, 1));
+    navigator.clipboard.writeText(JSON.stringify({ takenAt: new Date().toISOString(), userAgent: navigator.userAgent, checks: checks }, null, 1));
   };
   document.getElementById('resetUrl').onclick = function () { localStorage.removeItem(STORE_KEY); location.reload(); };
-  document.getElementById('mic').onclick = record;
+  document.getElementById('mic').onclick = function () { converse(); };
 
   var url = savedUrl();
   if (url) openApp(url); else showSetup();
+  updateWake();
 })();
 </script>
 </body>
